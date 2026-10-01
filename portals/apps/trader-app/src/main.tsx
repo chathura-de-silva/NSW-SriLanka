@@ -5,6 +5,7 @@ import './i18n'
 import App from './App.tsx'
 import '@radix-ui/themes/styles.css'
 import { BrowserRouter } from 'react-router-dom'
+import { Toaster } from 'react-hot-toast'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { AuthProvider } from 'react-oidc-context'
 import { userManager } from './oidcUserManager'
@@ -28,6 +29,7 @@ initAppConfig()
                 <BrowserRouter>
                   <App />
                 </BrowserRouter>
+                <Toaster position="top-center" />
               </ThemedShell>
             </ColorSchemeProvider>
           </AuthProvider>

@@ -23,6 +23,7 @@
     "oidc-client-ts": "^3.5.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
+    "react-hot-toast": "^2.6.1",
     "react-i18next": "^17.0.15",
     "react-markdown": "^10.1.0",
     "react-oidc-context": "^3.3.1",

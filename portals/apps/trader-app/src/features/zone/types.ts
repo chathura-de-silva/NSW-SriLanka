@@ -1,5 +1,6 @@
 import type { JsonSchema, UISchemaElement } from '@jsonforms/core'
 import type { ReactNode } from 'react'
+import type { ToastVariant } from '@/components/Toast'
 
 export type FormPayload = {
   schema: JsonSchema
@@ -36,7 +37,7 @@ export type Handle = {
 
 export type HandleMessage = {
   text: string
-  variant?: AlertVariant
+  variant?: ToastVariant
 }
 
 // HandleAction dispatches a handle's command with the data its renderer
