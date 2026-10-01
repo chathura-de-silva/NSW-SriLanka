@@ -238,11 +238,11 @@ export function TaskDetailScreen() {
         onSubmitForm={
           hasSubmitted
             ? undefined
-            : async (command, data) => {
+            : async (handle, data) => {
                 if (!taskId) return
                 setSubmitError(null)
                 try {
-                  await submitTaskStep(taskId, command, data)
+                  await submitTaskStep(taskId, handle.command, data)
                   // Latch the action off during the transition window so the step
                   // can't be double-submitted while the backend advances.
                   setHasSubmitted(true)

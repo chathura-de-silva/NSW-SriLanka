@@ -5,7 +5,7 @@ import { radixRenderers } from '@opennsw/jsonforms-renderers'
 import { Button, Callout } from '@radix-ui/themes'
 import { ExclamationTriangleIcon } from '@radix-ui/react-icons'
 import { useTranslation } from 'react-i18next'
-import type { Handle, ZoneRendererProps } from '@/features/zone/types'
+import type { Handle, HandleAction, ZoneRendererProps } from '@/features/zone/types'
 import { autoFillForm } from '@/utils/formUtils'
 import { getBooleanEnv } from '@/runtimeConfig'
 
@@ -61,11 +61,11 @@ type Props = ZoneRendererProps<'FORM'> & {
   // catalog (see FORM_ELEMENT_CATALOG below).
   handles?: Handle[]
   // onAction fires when the user activates a handle. The renderer extracts
-  // its own form data and passes it alongside the command. Validation
+  // its own form data and passes it alongside the handle. Validation
   // gating is internal — disabled handles cannot fire. The form is
   // editable iff both handles and onAction are provided; otherwise it
   // renders read-only.
-  onAction?: (command: string, data: Record<string, unknown>) => Promise<void>
+  onAction?: HandleAction
 }
 
 // FORM_ELEMENT_CATALOG is this renderer's published list of interactive
@@ -200,7 +200,7 @@ export function FormRenderer({ payload, handles, onAction }: Props) {
       return
     }
     setSubmitting(true)
-    void onAction(h.command, data).finally(() => setSubmitting(false))
+    void onAction(h, data).finally(() => setSubmitting(false))
   }
 
   return (

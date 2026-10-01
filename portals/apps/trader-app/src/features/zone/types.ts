@@ -31,7 +31,17 @@ export type Handle = {
   command: string
   label: string
   element?: string
+  messages?: Record<string, HandleMessage>
 }
+
+export type HandleMessage = {
+  text: string
+  variant?: AlertVariant
+}
+
+// HandleAction dispatches a handle's command with the data its renderer
+// gathered. The whole handle is passed so the caller knows which one fired.
+export type HandleAction = (handle: Handle, data: Record<string, unknown>) => Promise<void>
 
 // id is the section key from the task's render config. unique within a view.
 type ZoneComponentBase = {
