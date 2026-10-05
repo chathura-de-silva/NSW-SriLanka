@@ -128,11 +128,37 @@ The child subworkflow defines the execution path of a single transaction stage.
     - `requireDataKey`: Section only renders if this **top-level** key exists and is non-null in the task's data. Not a dotted path.
     - `requireClaim`: Section only renders if the caller holds this claim — see [Read authorization](#read-authorization).
   - `handles`: **CRITICAL FOR EDITABILITY**. Defines what actions/buttons can be clicked on the form zone. **If `handles` is missing or empty, the frontend renders the form fields as read-only (non-interactive).** A handle only reaches the frontend if its section rendered *and* its `command` is legal in the current state, so hiding a section also removes its buttons.
+    - `messages`: Optional. What to tell the trader after clicking this button, keyed by the task state the click leads to — see [Post-action messages](#post-action-messages).
 - `layouts`: Named orderings of the sections (e.g. `"layout_1": ["feedback", "user_form"]`). Each layout lists **all** section keys and expresses relative order only, never visibility. visibility stays with each section's `visibleWhen`. States that agree on the relative order of the sections they show can share one layout.
 - `states`: Defines the operational lifecycle.
   - `PENDING_USER`: Active state where user can perform actions.
     - `actions`: List of allowed commands (e.g. `{ "command": "submit" }`).
     - `order`: Which layout to render this state in, as `{ "$ref": "#/layouts/<name>" }`.
+
+### Post-action messages
+
+Submitting a step is asynchronous: the request only records the data and wakes the workflow, and the task's state changes when the next step starts. So the trader-app waits 1.5 seconds after a click, fetches the task again, and shows the clicked button's `messages` entry for the state it finds, as a toast. No entry for that state shows nothing, and so does a next step that takes longer than the wait.
+
+Each entry is `{ "text": "...", "variant": "..." }`. `variant` is one of `success`, `info`, `warning` or `error`, and is `success` when left out:
+
+- `success`: it worked.
+- `info`: it was accepted, but the result isn't known yet.
+- `warning`: it worked, but the trader has to do something.
+- `error`: it failed.
+
+```json
+"handles": [
+  { "command": "save_as_draft", "label": "Save as Draft", "element": "secondary_action",
+    "messages": { "PENDING_USER": { "text": "Draft saved.", "variant": "success" } } },
+  { "command": "submit", "label": "Submit Application", "element": "primary_action",
+    "messages": { "QUEUED_EXTERNALLY": { "text": "Application sent to NPQS for review.", "variant": "success" } } }
+]
+```
+
+When writing them:
+
+- **One message per state.** If a button can end in the same state for different reasons (the SLPA gate pass button both issues a gate pass and deletes a consolidation, and either completes the task), write one message that is true for all of them.
+- **The state the button was clicked in matches even when nothing has happened yet.** A key equal to that state, such as `PENDING_USER` for Save as Draft or Verify, is found whether or not the next step has run. Use it only when the request itself does the work, as a draft save does, or with neutral wording and `info` ("Verification requested.").
 
 ### Section order
 
