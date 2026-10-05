@@ -7,6 +7,7 @@ import '@radix-ui/themes/styles.css'
 import { BrowserRouter } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { CONTENT_TOP_PX } from './components/Layout/Layout'
 import { AuthProvider } from 'react-oidc-context'
 import { userManager } from './oidcUserManager'
 import { initAppConfig } from './config'
@@ -29,7 +30,7 @@ initAppConfig()
                 <BrowserRouter>
                   <App />
                 </BrowserRouter>
-                <Toaster position="top-center" />
+                <Toaster position="top-center" containerStyle={{ top: CONTENT_TOP_PX }} />
               </ThemedShell>
             </ColorSchemeProvider>
           </AuthProvider>

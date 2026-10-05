@@ -1,2 +1,2 @@
 export { showToast } from './showToast'
-export type { ToastVariant } from './ToastMessage'
+export type { ToastVariant } from './showToast'
