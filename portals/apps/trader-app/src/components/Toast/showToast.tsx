@@ -1,12 +1,11 @@
-import type { ReactNode } from 'react'
-import toast from 'react-hot-toast'
+import toast, { type Renderable } from 'react-hot-toast'
 import { CheckCircledIcon, CrossCircledIcon, ExclamationTriangleIcon, InfoCircledIcon } from '@radix-ui/react-icons'
 
 export type ToastVariant = 'info' | 'success' | 'warning' | 'error'
 
 const TOAST_DURATION_MS = 2000
 
-const TOAST_ICONS: Record<ToastVariant, ReactNode> = {
+const TOAST_ICONS: Record<ToastVariant, Renderable> = {
   success: <CheckCircledIcon className="w-5 h-5 shrink-0 text-success" />,
   info: <InfoCircledIcon className="w-5 h-5 shrink-0 text-info" />,
   warning: <ExclamationTriangleIcon className="w-5 h-5 shrink-0 text-warning" />,
