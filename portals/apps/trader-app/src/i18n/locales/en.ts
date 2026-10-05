@@ -137,7 +137,6 @@ const en = {
       nextTask: 'Next Task',
       goBack: 'Go Back',
       refresh: 'Refresh',
-      submitSuccess: 'Application submitted successfully',
       validation: {
         requiredFields: 'Please fill in all required fields.',
       },
