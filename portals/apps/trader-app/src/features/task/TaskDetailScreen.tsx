@@ -45,7 +45,6 @@ export function TaskDetailScreen() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [submitError, setSubmitError] = useState<string | null>(null)
   const [hasSubmitted, setHasSubmitted] = useState(false)
   // Bumped once an action's refetch has landed, and mixed into the zone keys so
   // the form remounts against what came back. A form seeds its data on mount
@@ -206,15 +205,6 @@ export function TaskDetailScreen() {
           {t('tasks.refresh')}
         </Button>
       </div>
-      {submitError && (
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 pt-4">
-          <div className="rounded-xl bg-error-subtle px-4 py-3 shadow-sm">
-            <Text size="2" weight="medium" className="text-error-strong">
-              {submitError}
-            </Text>
-          </div>
-        </div>
-      )}
       <TraderZoneLayout
         task={zoneView}
         formEpoch={formEpoch}
@@ -223,7 +213,6 @@ export function TaskDetailScreen() {
             ? undefined
             : async (handle, data) => {
                 if (!taskId) return
-                setSubmitError(null)
                 try {
                   await submitTaskStep(taskId, handle.command, data)
                   // Latch the action off during the transition window so the step
@@ -249,9 +238,9 @@ export function TaskDetailScreen() {
                     }
                   }
                 } catch (err) {
-                  // Use a local error here rather than the screen-level `error`, which
-                  // would unmount the layout and discard the user's entered form data.
-                  setSubmitError(t('tasks.error.submitFailed'))
+                  // Toast rather than the screen-level `error`, which would unmount
+                  // the layout and discard the user's entered form data.
+                  showToast(t('tasks.error.submitFailed'), 'error')
                   console.error('TaskDetailScreen: failed to submit task step:', err)
                 } finally {
                   // Re-arm the action once the task has settled. Looping steps (e.g.
