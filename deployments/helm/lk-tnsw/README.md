@@ -6,8 +6,8 @@ Helm chart for Sri Lanka's Trade National Single Window platform: the
 ([`portals/apps/trader-app`](../../../portals/apps/trader-app)), deployed
 together as one release with `backend`/`frontend` sections in values. Infra
 this stack depends on (Postgres, Temporal, Thunder ID, Argus) is deployed
-separately — component env just points at their in-cluster Service names or
-external URLs.
+separately — the backend's config just points at their in-cluster Service
+names or external URLs.
 
 **Start from [`../values-example.yaml`](../values-example.yaml)** — a
 complete, ready-to-edit override file covering every config value each
@@ -18,14 +18,14 @@ did that reverse-engineering for you.
 
 ## Files Included
 
-Templates are grouped by component under `templates/backend/` and `templates/frontend/` (Helm renders `templates/` recursively, so subdirectories are purely organizational):
+Templates are grouped by component under `templates/backend/`, `templates/migration/` and `templates/frontend/` (Helm renders `templates/` recursively, so subdirectories are purely organizational):
 
 - **[backend/deployment.yaml](templates/backend/deployment.yaml)**: Deployment, container, ports, environment variables, mounts, and probes for the backend.
 - **[backend/configmap.yaml](templates/backend/configmap.yaml)**: Renders `backend.config` into the server's `config.yaml`, mounted into the backend container (see "Backend config file" below).
 - **[frontend/deployment.yaml](templates/frontend/deployment.yaml)**: Deployment, container, ports, mounts, and probes for the frontend — its runtime config comes from the mounted ConfigMap below, not container env vars.
 - **[frontend/configmap.yaml](templates/frontend/configmap.yaml)**: Renders `frontend.config` into `config.js`, mounted into the frontend container for the browser to read (see "Frontend runtime config, not secrets" below).
 - **[backend/service.yaml](templates/backend/service.yaml)** / **[frontend/service.yaml](templates/frontend/service.yaml)**: Exposes each component's container port as a cluster-internal Service.
-- **[backend/migration-job.yaml](templates/backend/migration-job.yaml)**: Runs schema migrations as a pre-install/pre-upgrade hook (off by default). No frontend equivalent — the portal has no database.
+- **[migration/job.yaml](templates/migration/job.yaml)** / **[migration/configmap.yaml](templates/migration/configmap.yaml)**: Runs schema migrations as a pre-install/pre-upgrade hook (when `migration.enabled`), with the migrator's own `config.yaml` rendered from `migration.config` (see "Migration Job" below).
 - **[backend/route.yaml](templates/backend/route.yaml)** / **[frontend/route.yaml](templates/frontend/route.yaml)**: Exposes each component externally via an OpenShift Route (when `<component>.route.enabled`).
 - **[backend/ingress.yaml](templates/backend/ingress.yaml)** / **[frontend/ingress.yaml](templates/frontend/ingress.yaml)**: Exposes each component externally via a Kubernetes Ingress (when `<component>.ingress.enabled`).
 - **[frontend/branding-configmap.yaml](templates/frontend/branding-configmap.yaml)**: Renders `frontend.branding` into a ConfigMap and mounts it over the image's baked-in `branding.json` (when `frontend.branding` is set).
@@ -53,8 +53,8 @@ The chart is released with the app, at the same version: chart `0.1.0` has
 [GitHub Releases](https://github.com/OpenNSW/nsw-srilanka/releases) for the
 versions.
 
-`values.yaml` holds only neutral defaults, split into `backend:` and
-`frontend:` sections. Copy [`values-example.yaml`](../values-example.yaml)
+`values.yaml` holds only neutral defaults, split into `backend:`,
+`migration:` and `frontend:` sections. Copy [`values-example.yaml`](../values-example.yaml)
 and fill in your environment's URLs and secrets.
 
 To install from this directory instead — to test chart changes — set both
@@ -74,22 +74,65 @@ is a third — all three are published as separate GHCR images by the same
 [`release.yml`](../../../.github/workflows/release.yml) run (same git tag →
 same version for all three):
 
-| Image                          | Built from                                    | Deployed by                  |
-|--------------------------------|-----------------------------------------------|------------------------------|
-| `ghcr.io/opennsw/tnsw-api`  | root `Dockerfile`, `runtime` (default) target | `backend/deployment.yaml`    |
-| `ghcr.io/opennsw/tnsw-migrate`  | root `Dockerfile`, `migrate` target           | `backend/migration-job.yaml` |
-| `ghcr.io/opennsw/tnsw-web` | `portals/apps/trader-app/Dockerfile`          | `frontend/deployment.yaml`   |
+| Image                          | Built from                                    | Deployed by                |
+| ------------------------------ | --------------------------------------------- | -------------------------- |
+| `ghcr.io/opennsw/tnsw-api`     | root `Dockerfile`, `runtime` (default) target | `backend/deployment.yaml`  |
+| `ghcr.io/opennsw/tnsw-migrate` | root `Dockerfile`, `migrate` target           | `migration/job.yaml`       |
+| `ghcr.io/opennsw/tnsw-web`     | `portals/apps/trader-app/Dockerfile`          | `frontend/deployment.yaml` |
 
 All three are published as multi-arch manifest lists covering `linux/amd64` and
 `linux/arm64`, so one tag scheduled onto a mixed-arch cluster resolves to the
 right image per node — no `nodeSelector` on `kubernetes.io/arch` is needed.
 
-The migration Job (`backend.migration.enabled: true`) uses a **different
-image** from the backend Deployment — see `backend.migration.image` in
-`values.yaml`. It also uses **different DB env var names** than the backend
-(`DB_USER`, not `DB_USERNAME`) because it runs the external nsw-agency
-migrator's own binary, not this backend's code. `backend.migration.image.tag`
-defaults to `backend.image.tag`, then to the chart's `appVersion`.
+`migration.image.tag` defaults to `backend.image.tag`, then to the chart's
+`appVersion`.
+
+### Migration Job
+
+The migration Job (`migration.enabled: true`) is a component of its own. It
+runs the external OpenNSW/agency migrator's binary, not this backend's code,
+and shares no configuration with the backend:
+
+- `migration.config` is the migrator's `config.yaml`. It reads only `db` (the
+  same schema as `backend.config.db`) and, optionally, `migrationDir`, which
+  defaults to the SQL baked into the image. `db.driver` must be `postgres` —
+  the migrator defaults it to SQLite, so the chart refuses to render without
+  it.
+- `migration.env` / `migration.envFrom` carry only the secrets that file
+  references, so the Job is never handed the backend's other secrets. Nothing
+  is inherited from `backend.env` / `backend.envFrom`.
+- Its image, pull secrets, security contexts and resources are set under
+  `migration` too.
+
+The file is rendered into a hook ConfigMap of its own, since on a first install
+the Job runs before the release's regular resources exist.
+
+#### Database accounts
+
+[`values-example.yaml`](../values-example.yaml) uses one account for both: the
+same user in `migration.config` as in `backend.config`, and `migration.env`
+pointing at the same `db-password` Secret key as `backend.env`. That needs no
+extra database setup.
+
+For production, prefer a separate account. Because the configs are separate,
+the migrator can connect as its own account — one that owns the schema — while
+the server's account only reads and writes rows, so a compromised server
+cannot alter or drop the schema. Give the migrator its own Secret key and point
+`migration.env` at it. Tables the
+migrator creates are owned by it, so grant the server's account access to them
+once, as the migrator's account (shown here as `nsw_migrator` and `nsw_app`):
+
+```sql
+GRANT USAGE ON SCHEMA public TO nsw_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO nsw_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO nsw_app;
+```
+
+Run the default-privilege grants before the first migration; for a database
+that already has tables, also grant on `ALL TABLES` / `ALL SEQUENCES IN SCHEMA
+public`.
 
 ### Prerequisite: secrets
 
@@ -106,7 +149,9 @@ kubectl create secret generic nsw-secrets \
   --from-literal=m2m-customs-secret=... \
   --from-literal=m2m-sltb-secret=... \
   --from-literal=m2m-asycuda-secret=... \
-  --from-literal=argus-api-key=...
+  --from-literal=argus-api-key=... \
+  --from-literal=notification-email-token=... \
+  --from-literal=notification-sms-password=...
 ```
 
 The GovPay+ gateway also needs this GO's RSA private key. GovPay+ encrypts
@@ -127,8 +172,10 @@ reference; an inline PEM is refused. Without it the backend starts but answers
 every GovPay+ call with 500; a key that is set but unreadable stops the backend
 at startup.
 
-See [`.env.example`](../../../.env.example) for what each of these secrets
-backs and the full set of non-secret config the backend reads. The frontend
+`backend.env` exposes each `nsw-secrets` key to the server as an env var, and
+`backend.config` references it by placeholder (see below). See
+[`configs/config.example.yaml`](../../../configs/config.example.yaml) for
+every setting the backend reads. The frontend
 needs no secrets — its `config` is all public SPA config (see below).
 
 ### Backend config file
@@ -138,7 +185,11 @@ provides one. `backend.config` holds the file's content as values (the schema
 is [`configs/config.example.yaml`](../../../configs/config.example.yaml)). The
 chart renders it into a ConfigMap and mounts it read-only at
 `backend.configMountPath` (`/app/config`), then points `CONFIG_PATH` there.
-`backend.config` is empty by default, which is valid.
+Every server setting lives here — the backend reads no other env vars besides
+`APP_ENV` and the secrets the file references. There are no built-in
+defaults: every setting the server needs must be set, or it refuses to start
+(see [`values-example.yaml`](../values-example.yaml) for a complete one).
+`backend.config` is empty by default, so an override file always sets it.
 
 - To use a file of your own instead, set `backend.env.CONFIG_PATH`. The chart
   then leaves `CONFIG_PATH` alone.
@@ -175,6 +226,7 @@ for the full schema.
 
 Both components default their `livenessProbe`/`readinessProbe` to `GET
 /health`:
+
 - Backend: see `internal/bootstrap/app.go` — returns 503 while the database
   or authn dependency is unreachable.
 - Frontend: answered directly by

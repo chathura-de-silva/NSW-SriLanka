@@ -4,6 +4,7 @@ import { Button, Spinner, Text } from '@radix-ui/themes'
 import { ArrowLeftIcon, ArrowRightIcon, ReloadIcon } from '@radix-ui/react-icons'
 import { useTranslation } from 'react-i18next'
 import { getZoneView, submitTaskStep } from './service'
+import { HttpError } from '@/services/http'
 import { getConsignment } from '@/features/consignment/service.ts'
 import type { WorkflowNode } from '@/features/consignment/types'
 import { isTraderVisibleNodeType } from '@/features/consignment/workflowNodes'
@@ -212,9 +213,9 @@ export function TaskDetailScreen() {
           hasSubmitted
             ? undefined
             : async (handle, data) => {
-                if (!taskId) return
+                if (!taskId || !zoneView.step_id) return
                 try {
-                  await submitTaskStep(taskId, handle.command, data)
+                  await submitTaskStep(taskId, zoneView.step_id, handle.command, data)
                   // Latch the action off during the transition window so the step
                   // can't be double-submitted while the backend advances.
                   setHasSubmitted(true)
@@ -240,7 +241,15 @@ export function TaskDetailScreen() {
                 } catch (err) {
                   // Toast rather than the screen-level `error`, which would unmount
                   // the layout and discard the user's entered form data.
-                  showToast(t('tasks.error.submitFailed'), 'error')
+                  if (err instanceof HttpError && err.status === 409) {
+                    // The task moved on since this view loaded (another tab, a callback).
+                    // Show where it is now rather than retrying against the old step.
+                    showToast(t('tasks.error.staleStep'), 'error')
+                    await fetchTask()
+                    setFormEpoch((n) => n + 1)
+                  } else {
+                    showToast(t('tasks.error.submitFailed'), 'error')
+                  }
                   console.error('TaskDetailScreen: failed to submit task step:', err)
                 } finally {
                   // Re-arm the action once the task has settled. Looping steps (e.g.

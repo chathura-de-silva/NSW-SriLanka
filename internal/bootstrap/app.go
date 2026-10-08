@@ -16,8 +16,8 @@ import (
 	"github.com/OpenNSW/core/artifact/loaders"
 	"github.com/OpenNSW/core/authz"
 	"github.com/OpenNSW/core/cors"
-	"github.com/OpenNSW/core/notification"
-	"github.com/OpenNSW/core/notification/providers"
+	notification "github.com/OpenNSW/core/notifications"
+	"github.com/OpenNSW/core/notifications/providers"
 	"github.com/OpenNSW/core/payment"
 	"github.com/OpenNSW/core/refid"
 	"github.com/OpenNSW/core/remote"
@@ -154,7 +154,7 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) { //nolint:goc
 	// Storage is built here rather than alongside its HTTP handler further
 	// down: task plugins that attach uploaded files to an outbound call read
 	// through this service, so it has to exist before the task stack (Stage 4).
-	// STORAGE_TYPE picks a backend of this deployment's own or a proxy onto
+	// storage.type picks a backend of this deployment's own or a proxy onto
 	// the service that owns the files.
 	storageStack, err := nswstorage.New(ctx, cfg.Storage, remoteManager)
 	if err != nil {
@@ -179,8 +179,12 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) { //nolint:goc
 	// closure is only invoked when a task workflow finishes, by which point
 	// the assignment has already happened.
 	var parentRunner workflow.TemporalManager
-	onTaskCompleted := func(parentWorkflowID, parentRunID, parentNodeID string, finalVariables map[string]any) error {
-		return parentRunner.TaskDone(context.Background(), parentWorkflowID, parentRunID, parentNodeID, finalVariables)
+	// The run ID is "" (Temporal: the workflow's current run) because a parent
+	// workflow only ever has one run; the step ID alone names the Activity in it.
+	// CompleteActivation's error is returned as it is: the orchestrator treats
+	// workflow.ErrActivationNotPending as "an earlier attempt already woke the parent".
+	onTaskCompleted := func(parentWorkflowID, parentStepID string, finalVariables map[string]any) error {
+		return parentRunner.CompleteActivation(context.Background(), parentWorkflowID, "", parentStepID, finalVariables)
 	}
 
 	task, stopTask, err := initTask(db, temporalClient, remoteManager, paymentService, companyService, storageStack.Service, artifactRegistry, globalCatalog, cfg, onTaskCompleted)
@@ -195,7 +199,7 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) { //nolint:goc
 	// -------------------------------------------------------------------
 	// Stage 5: Consignment Service & Workflow Parent Runner
 	// -------------------------------------------------------------------
-	auditClient := audit.NewClient(cfg.Audit)
+	auditClient := audit.NewClient(cfg.Audit.ClientConfig())
 	audit.InitializeGlobalAudit(auditClient)
 	recorder := nswaudit.NewRecorder(auditClient)
 
@@ -425,16 +429,17 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) { //nolint:goc
 	// scope gate. Order matters: withAuth injects the AuthContext; withScope
 	// reads it. Public routes (local-dev storage) are below.
 	mux.Handle("GET /api/v1/tasks/{id}", withAuth(withScope(scopes.TaskRead)(taskAuthzGate.Handler(http.HandlerFunc(taskHandler.HandleGetTask)))))
-	mux.Handle("POST /api/v1/tasks/{id}", withAuth(withScope(scopes.TaskWrite)(taskAuthzGate.Handler(http.HandlerFunc(taskHandler.HandleCompleteTaskStep)))))
+	mux.Handle("POST /api/v1/tasks/{id}/steps/{stepId}", withAuth(withScope(scopes.TaskWrite)(taskAuthzGate.Handler(http.HandlerFunc(taskHandler.HandleCompleteTaskStep)))))
+	mux.Handle("POST /api/v1/callbacks/{token}", withAuth(withScope(scopes.TaskWrite)(taskAuthzGate.Handler(http.HandlerFunc(taskHandler.HandleCompleteTaskStepByToken)))))
 
 	mux.Handle("GET /api/v1/static-data/{id}", withAuth(withScope(scopes.TaskRead)(http.HandlerFunc(staticDataHandler.HandleGet))))
 
 	mux.Handle("GET /api/v1/users/me", withAuth(withScope(scopes.ProfileRead)(http.HandlerFunc(profileHandler.HandleGetProfile))))
 
 	// Storage
-	mux.Handle("POST /api/v1/storage", withAuth(withScope(scopes.StorageWrite)(http.HandlerFunc(storageHandler.Upload))))
-	mux.Handle("GET /api/v1/storage/{key}", withAuth(withScope(scopes.StorageRead)(http.HandlerFunc(storageHandler.Download))))
-	mux.Handle("DELETE /api/v1/storage/{key}", withAuth(withScope(scopes.StorageDelete)(http.HandlerFunc(storageHandler.Delete))))
+	mux.Handle(nswstorage.UploadRoute, withAuth(withScope(scopes.StorageWrite)(http.HandlerFunc(storageHandler.Upload))))
+	mux.Handle(nswstorage.DownloadRoute, withAuth(withScope(scopes.StorageRead)(http.HandlerFunc(storageHandler.Download))))
+	mux.Handle(nswstorage.DeleteRoute, withAuth(withScope(scopes.StorageDelete)(http.HandlerFunc(storageHandler.Delete))))
 
 	// Mode-specific routes: TNSW's consignment, CHA/company, payment and webhook
 	// routes, or the agency's inject and case routes. The shared routes above serve both.
@@ -451,10 +456,10 @@ func Build(ctx context.Context, cfg *config.Config) (*App, error) { //nolint:goc
 		}, withAuth, withScope)
 	}
 
-	// When using local storage, these endpoints serve as mocks for S3.
+	// When using local storage, these endpoints serve as mocks for S3, at
+	// nswstorage.RoutePrefix/{key}/content.
 	if localContent := storageStack.LocalContent; localContent != nil {
-		mux.HandleFunc("PUT /api/v1/storage/{key}/content", localContent.UploadContentLocal)
-		mux.HandleFunc("GET /api/v1/storage/{key}/content", localContent.DownloadContent)
+		localContent.RegisterRoutes(mux)
 	}
 
 	// -------------------------------------------------------------------
@@ -579,10 +584,10 @@ func wireParentRunner(c client.Client, namespace string, activator parentTaskAct
 		return activator.StartTask(context.Background(), payload)
 	}
 
-	onCompletion := func(workflowID string, finalVariables map[string]any) error {
-		log.Printf("\n[Parent Workflow] Completed. Final state: %v\n", finalVariables)
+	onCompletion := func(completion workflow.WorkflowCompletion) error {
+		log.Printf("\n[Parent Workflow] Completed. Final state: %v\n", completion.FinalVariables)
 		if upstream != nil {
-			if err := upstream.CompletionHandler(workflowID, finalVariables); err != nil {
+			if err := upstream.CompletionHandler(completion.WorkflowID, completion.FinalVariables); err != nil {
 				return fmt.Errorf("upstream completion handler: %w", err)
 			}
 		}
@@ -753,28 +758,35 @@ func initTask(
 
 	// Handlers for events on the per-task (micro) sub-workflows running on
 	// MICRO_WORKFLOW_QUEUE. Nodes inside a task workflow activate subtasks
-	// via tm.StartSubTask, which dispatches to the matching plugin.
+	// via tm.StartTaskStep, which dispatches to the matching plugin.
 	microActivationHandler := func(payload workflow.TaskPayload) (map[string]any, error) {
-		log.Printf("\n[Micro Workflow] SubTask activated: node=%s template=%s\n", payload.NodeID, payload.TaskTemplateID)
+		log.Printf("\n[Micro Workflow] Step activated: node=%s template=%s\n", payload.NodeID, payload.TaskTemplateID)
 		if tm == nil {
 			return nil, fmt.Errorf("task manager is not initialized (misconfiguration)")
 		}
-		return tm.StartSubTask(context.Background(), payload)
+		return tm.StartTaskStep(context.Background(), payload)
 	}
 
-	microCompletionHandler := func(workflowID string, finalVariables map[string]any) error {
-		log.Printf("\n[Micro Workflow] Completed. Final state: %v\n", finalVariables)
+	microCompletionHandler := func(completion workflow.WorkflowCompletion) error {
+		log.Printf("\n[Micro Workflow] Completed. Final state: %v\n", completion.FinalVariables)
 		if tm == nil {
 			return fmt.Errorf("task manager is not initialized (misconfiguration)")
 		}
-		return tm.HandleTaskCompletion(context.Background(), workflowID, finalVariables)
+		return tm.HandleTaskCompletion(context.Background(), completion)
 	}
 
 	workflowRunner := workflow.NewTemporalManager(temporalClient, cfg.Temporal.Namespace, "MICRO_WORKFLOW_QUEUE", microActivationHandler, microCompletionHandler)
 	workflowRunner.RegisterAdminParkHandler(newAdminParkLogger("task workflow"))
 
-	notifManager, err := notification.NewManager(cfg.Notification,
-		providers.NewEmailProvider(), providers.NewSMSProvider())
+	emailProvider, err := providers.NewEmailProvider(cfg.Notification.Providers.Email)
+	if err != nil {
+		return nil, nil, fmt.Errorf("email provider: %w", err)
+	}
+	smsProvider, err := providers.NewSMSProvider(cfg.Notification.Providers.SMS)
+	if err != nil {
+		return nil, nil, fmt.Errorf("sms provider: %w", err)
+	}
+	notifManager, err := notification.NewManager(emailProvider, smsProvider)
 	if err != nil {
 		return nil, nil, fmt.Errorf("notification manager: %w", err)
 	}

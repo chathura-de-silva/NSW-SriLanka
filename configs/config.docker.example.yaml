@@ -1,0 +1,279 @@
+# Server configuration file for the Docker Compose stack (`make dev`,
+# `make preview`): compose.yml points the api container's CONFIG_PATH at
+# configs/config.docker.yaml, which `make setup` seeds from this committed
+# template. A native run reads configs/config.yaml (config.example.yaml)
+# instead; the two differ only in reaching the other services by container
+# hostname here rather than localhost.
+#
+# The file is mandatory. There are no built-in
+# defaults: every setting the server needs is written here, and one left out
+# (or empty) stops the server at startup rather than running on a value the
+# code chose. Only the optional sections (audit, refid, the inactive storage
+# and artifactLoader backends) may be left out.
+#
+# The otc CLI and the schema migrator read the same file (same CONFIG_PATH),
+# decoding only its db section — or point them at a separate file holding just
+# that section. Every placeholder in the file must resolve either way, not only
+# the db ones.
+#
+# CONFIG_PATH and APP_ENV are the only settings read from the environment.
+# APP_ENV=development is what lets authn.insecureSkipTLSVerify (and any
+# insecure_skip_tls_verify in services.json) through; anything else fails the
+# boot rather than trusting an unverified cert. `make dev`/`make preview`/
+# `make test-e2e` set it.
+#
+# Never write a secret into this file. Any value may instead be a placeholder
+# resolved at startup: "{{env:NAME}}" reads an env var, "{{file:/path}}" reads a
+# mounted file. The placeholder must be the whole value, and an unset one fails
+# the boot. The ones below are passed to the api container by compose.yml.
+
+# One section for the server, the otc CLI and the schema migrator
+# (OpenNSW/agency cmd/migrate): core/database's Config
+# (github.com/OpenNSW/core/database), whose keys the migrator shares. Always
+# set driver: the migrator defaults it to sqlite.
+db:
+  # postgres is the only driver supported today.
+  driver: postgres
+  postgres:
+    host: db
+    port: 5432
+    user: postgres
+    password: "{{env:DB_PASSWORD}}"
+    name: nsw_db
+    # Use require in production to enforce SSL connections to the database.
+    sslMode: disable
+    pool:
+      maxIdleConns: 10
+      maxOpenConns: 100
+      maxConnLifetimeSeconds: 3600
+
+server:
+  port: 8080
+  # debug | info | warn | error
+  logLevel: info
+  # The browser-facing URL: the host port compose publishes (BACKEND_PORT).
+  serviceURL: http://localhost:8080
+  # Maximum request body size, in bytes (32 MiB).
+  maxRequestBytes: 33554432
+  # Durations are Go duration strings (5s, 1m30s).
+  readHeaderTimeout: 5s
+  readTimeout: 15s
+  writeTimeout: 30s
+  idleTimeout: 60s
+  # Config file paths, relative to the container's working directory (/app),
+  # whose configs/ is the repo's, bind-mounted read-only.
+  # The outbound services registry, reaching the agencies by container hostname.
+  servicesConfigPath: configs/services.docker.json
+  paymentMethodsConfigPath: configs/payment_methods.json
+  # The global catalog: logical names -> IdP token roles and OAuth2 client ids.
+  catalogConfigPath: configs/catalog.json
+
+# Agency portals are listed too: they call the storage service directly.
+cors:
+  allowedOrigins:
+    - http://localhost:5173
+    - http://localhost:5174
+    - http://localhost:5175
+    - http://localhost:5176
+    - http://localhost:5177
+    - http://localhost:5178
+    - http://localhost:5179
+  allowedMethods: [GET, POST, PUT, DELETE, OPTIONS]
+  allowedHeaders: [Content-Type, Authorization]
+  allowCredentials: true
+  maxAge: 3600
+
+storage:
+  # local | s3 | proxy
+  type: local
+  # How long a presigned upload/download URL stays valid, in seconds.
+  presignTTLSeconds: 900
+  # What clients may upload. Not read when type is proxy: the owning service
+  # applies its own. MIME types, compared exactly with the upload's.
+  allowedUploadTypes:
+    - application/pdf
+    - image/jpeg
+    - image/png
+    - image/gif
+    - image/webp
+    # .xlsx only: OOXML workbooks cannot carry VBA macros, unlike legacy .xls,
+    # a known malware vector.
+    - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+  # Largest upload, in bytes (32 MiB). Not read when type is proxy.
+  maxUploadBytes: 33554432
+  # Only read when type is local.
+  local:
+    baseDir: ./bucket
+    # The base URL presigned local URLs are built on: server.serviceURL.
+    publicURL: http://localhost:8080
+    # Signs presigned upload URLs.
+    putSecret: "{{env:STORAGE_LOCAL_PUT_SECRET}}"
+  # Only read when type is s3.
+  # s3:
+  #   endpoint: ""
+  #   bucket: nsw-uploads
+  #   region: us-east-1
+  #   # Optional static credentials; set together, else the default AWS chain.
+  #   accessKey: "{{env:STORAGE_S3_ACCESS_KEY}}"
+  #   secretKey: "{{env:STORAGE_S3_SECRET_KEY}}"
+  #   publicURL: ""
+  # Only read when type is proxy. Serves storage from another service that owns
+  # the files, reached through the outbound services registry
+  # (server.servicesConfigPath), which supplies its URL and authentication. All
+  # four are required in proxy mode; below are that service's usual storage
+  # routes, and {key} may appear anywhere in the download/delete paths.
+  # proxy:
+  #   service: ""
+  #   uploadPath: /api/v1/storage
+  #   downloadPath: /api/v1/storage/{key}
+  #   deletePath: /api/v1/storage/{key}
+
+authn:
+  # The keys are fetched in-network; the issuer is the browser-facing host the
+  # tokens are minted for.
+  jwksURL: https://thunderid:8090/oauth2/jwks
+  issuer: https://localhost:8090
+  audience: https://api.nsw-srilanka.local
+  clientIDs:
+    - TRADER_PORTAL_APP
+    - FCAU_TO_NSW
+    - NPQS_TO_NSW
+    - CDA_TO_NSW
+    - SLPA_TO_NSW
+    - CUSTOMS_TO_NSW
+    - SLTB_TO_NSW
+    - SLCE_TO_NSW
+    - GOVPAY_TO_NSW
+  # Local development with self-signed certs may need to skip TLS verification
+  # for the JWKS endpoint. Only honored when APP_ENV=development (see above).
+  insecureSkipTLSVerify: true
+
+# One settings block per channel, in the schema of
+# github.com/OpenNSW/core/notification. At least one is required.
+notification:
+  providers:
+    email:
+      baseURL: https://email.svc.local
+      token: "{{env:NOTIFICATION_EMAIL_TOKEN}}"
+    sms:
+      baseURL: https://smsservice.lk
+      userName: replace-with-actual-username
+      password: "{{env:NOTIFICATION_SMS_PASSWORD}}"
+      sidCode: sidCode
+
+temporal:
+  host: temporal
+  port: 7233
+  namespace: default
+
+# Audit service (Argus).
+audit:
+  baseURL: http://argus:3001
+  apiKey: "{{env:ARGUS_API_KEY}}"
+
+integrations:
+  # Shared with SLPA out of band. Their Cargo Management System signs each
+  # service-order webhook with it (X-NSW-Signature: sha256=<hex> over the raw
+  # body), and that signature is the whole of POST /webhooks/slpa's
+  # authentication. Required: the service refuses to start without it, since a
+  # deployment that cannot mount the webhook would accept service orders it can
+  # never hear the answer to.
+  slpaWebhookSecret: "{{env:SLPA_WEBHOOK_SECRET}}"
+
+# Where artifacts (workflow definitions, templates, manifest.json) are fetched
+# from at startup: local | github | s3. Only the settings for the selected type
+# are read, in the schema of github.com/OpenNSW/core/artifact/loaders.
+#
+# This deployment's artifacts live in the public repo OpenNSW/one-trade-artifacts
+# under the tnsw/ base path, read from GitHub here so no local clone is needed.
+artifactLoader:
+  type: github
+  github:
+    # owner, repo and ref are required; prefer an immutable ref (tag or SHA).
+    owner: OpenNSW
+    repo: one-trade-artifacts
+    ref: main
+    # Optional in-repo directory prefix every path resolves against.
+    basePath: tnsw
+    # Required for private repos; lifts the unauthenticated rate limit.
+    # token: "{{env:ARTIFACT_GITHUB_TOKEN}}"
+    # Optional REST API root for GitHub Enterprise Server.
+    # baseURL: https://api.github.com
+    # Fetch from the raw-content host instead of the REST Contents API (no
+    # token, no REST rate limit; best for public repos pinned to an immutable
+    # ref).
+    # useRawHost: false
+    # rawBaseURL: https://raw.githubusercontent.com
+  # Offline alternative: clone the artifacts repo and set ARTIFACT_LOCAL_ROOT in
+  # .env to its tnsw dir; compose bind-mounts that at /app/artifacts.
+  #   git clone https://github.com/OpenNSW/one-trade-artifacts.git <path>
+  # local:
+  #   root: /app/artifacts
+  # s3:
+  #   bucket: nsw-configs
+  #   region: us-east-1
+  #   # Optional custom endpoint for S3-compatible stores (path-style addressing).
+  #   endpoint: ""
+  #   # Optional static credentials; set together, else the default AWS chain.
+  #   accessKey: "{{env:ARTIFACT_S3_ACCESS_KEY}}"
+  #   secretKey: "{{env:ARTIFACT_S3_SECRET_KEY}}"
+  #   # Optional in-bucket key prefix every path resolves against.
+  #   prefix: ""
+
+# What this deployment runs as: "tnsw" or "agency". Required.
+# The modes are exclusive. An agency serves inject and the officer case views in
+# place of TNSW's consignment, payment and webhook routes, and its catalog maps
+# the officer role instead of trader/CHA. See docs/agency.md.
+mode: tnsw
+
+# Reference ID formats for the REFID_GENERATOR task plugin, in the schema of
+# github.com/OpenNSW/core/refid (see its example_config.yaml for every segment
+# option). A subtask template names each field to fill, by JSON Pointer into
+# the step's inputs, and the format to generate it from; the inputs, with the
+# IDs filled in, land at its output_namespace:
+#
+#   {"task_type": "REFID_GENERATOR", "output_namespace": "refid",
+#    "plugin_properties": {"ids": [
+#      {"path": "/reference_id", "issuer": "TNSW", "id_type": "consignment_ref"}]}}
+#
+# "each" fills a field in every element of an array, and "params" names where
+# each param a format expects (a list segment's `param`, or a `{name}` in a
+# scope key) is read from; see docs/WORKFLOW_GUIDE.md. With no issuers, the
+# plugin fails every task that uses it.
+refid:
+  issuers: []
+  # issuers:
+  #   - issuer: TNSW
+  #     formats:
+  #       # consignment_ref — resets daily per port. Produces: TNSW-CMB-20260930-000042
+  #       - idType: consignment_ref
+  #         segments:
+  #           - type: literal
+  #             value: "TNSW-"
+  #           - type: list
+  #             list: port
+  #             param: portCode          # input_mapping must supply portCode
+  #           - type: literal
+  #             value: "-"
+  #           - type: date
+  #             layout: "20060102"       # Go reference-date layout, UTC
+  #           - type: literal
+  #             value: "-"
+  #           - type: sequence
+  #             sequence:
+  #               scopeKey: "{issuer}:{idType}:{portCode}:{yyyyMMdd}"
+  #               padding: 6
+  #
+  #       # voucher_code — 8 random characters, unique per id type. Produces: TNSW-VCH-7K2QQXAB
+  #       - idType: voucher_code
+  #         segments:
+  #           - type: literal
+  #             value: "TNSW-VCH-"
+  #           - type: random
+  #             random:
+  #               scopeKey: "{issuer}:{idType}"
+  #               charset: alphanumeric  # numeric | alpha | alphanumeric
+  #               length: 8
+  #
+  # lists:
+  #   port: [CMB, HBT]

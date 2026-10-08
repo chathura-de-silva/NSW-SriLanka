@@ -10,9 +10,9 @@
 COMPOSE         := docker compose
 # Pass only the base file to exclude the override == the real built images.
 COMPOSE_PREVIEW := docker compose -f compose.yml
-# Source services built from this repo (TNSW and the CDA agency); `make deps` starts
-# everything else.
-APP_SERVICES    := api trader-portal cda-api cda-portal
+# Source services built from this repo (TNSW and the CDA and Customs agencies);
+# `make deps` starts everything else.
+APP_SERVICES    := api trader-portal cda-api cda-portal customs-api customs-portal
 # Newline for turning `docker compose config --services` output into a word list.
 define NL
 
@@ -59,7 +59,7 @@ build: ## Build the images without starting anything
 # ---------------------------------------------------------------------------
 
 .PHONY: deps
-deps: ## Start everything EXCEPT the apps (api, trader-portal, cda-api, cda-portal)
+deps: ## Start everything EXCEPT the apps (api, trader-portal, cda-api, cda-portal, customs-api, customs-portal)
 	$(COMPOSE) up -d $(DEPS_SERVICES)
 
 .PHONY: test-e2e
@@ -81,8 +81,9 @@ test-e2e: ## Run in-process replay E2E tests (needs `make deps`; stops the api c
 
 .PHONY: migration
 migration: export GOWORK = off
-migration: export MIGRATION_DIR = ./migrations
-migration: export DB_DRIVER = sqlite
+# generate touches no database: an empty config leaves the migrator on its
+# defaults (sqlite, unused; migrationDir ./migrations).
+migration: export CONFIG_PATH = /dev/null
 migration: ## Scaffold a new migration file: make migration name=<description>
 	@test -n "$(name)" || { echo "Usage: make migration name=<description>  (e.g. make migration name=add_users_table)"; exit 1; }
 	@go run github.com/OpenNSW/agency/backend/cmd/migrate@$(MIGRATE_VERSION) generate $(name)
@@ -109,10 +110,24 @@ config: ## Print the merged dev config (for debugging)
 
 # ---------------------------------------------------------------------------
 
+# cmd.exe only: Windows_NT with MSYSTEM unset. Git Bash / MSYS set MSYSTEM
+# and keep Unix recipes. cmd's find is FIND.EXE, so it cannot walk files, and
+# it has no grep or awk. Defined above `help` because make picks the recipe
+# when it reads the Makefile.
+ifeq ($(OS),Windows_NT)
+ifeq ($(MSYSTEM),)
+  USE_CMD := 1
+endif
+endif
+
 .PHONY: help
 help: ## Show this help
-	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+ifdef USE_CMD
+	@powershell -NoProfile -Command "Get-Content '$(firstword $(MAKEFILE_LIST))' | ForEach-Object { if ($$_ -match '^([a-zA-Z0-9_-]+):.*?## (.*)$$') { '  {0,-14} {1}' -f $$Matches[1], $$Matches[2] } }"
+else
+	@grep -hE '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+endif
 
 # ---------------------------------------------------------------------------
 # Go code quality (mirrors the backend CI pipeline)
@@ -120,14 +135,6 @@ help: ## Show this help
 # requiring the developer to manually update their shell profile.
 # cmd.exe uses ';'. Git Bash / MSYS set MSYSTEM and keep ':'.
 # ---------------------------------------------------------------------------
-
-# cmd.exe only: Windows_NT with MSYSTEM unset. Git Bash / MSYS set MSYSTEM
-# and keep Unix recipes. cmd's find is FIND.EXE, so it cannot walk files.
-ifeq ($(OS),Windows_NT)
-ifeq ($(MSYSTEM),)
-  USE_CMD := 1
-endif
-endif
 
 ifdef USE_CMD
   export PATH := $(shell go env GOPATH)/bin;$(PATH)
@@ -146,12 +153,13 @@ ifdef USE_CMD
 	@if exist .env.example if not exist .env copy /Y .env.example .env
 	@if exist idp\.env.example if not exist idp\.env copy /Y idp\.env.example idp\.env
 	@if exist portals\apps\trader-app\public\config.example.js if not exist portals\apps\trader-app\public\config.js copy /Y portals\apps\trader-app\public\config.example.js portals\apps\trader-app\public\config.js
-	@if exist configs\notification.example.json if not exist configs\notification.json copy /Y configs\notification.example.json configs\notification.json
+	@if exist configs\services.example.json if not exist configs\services.json copy /Y configs\services.example.json configs\services.json
 	@if exist configs\services.docker.example.json if not exist configs\services.docker.json copy /Y configs\services.docker.example.json configs\services.docker.json
 	@if exist configs\payment_methods.example.json if not exist configs\payment_methods.json copy /Y configs\payment_methods.example.json configs\payment_methods.json
 	@if exist configs\catalog.example.json if not exist configs\catalog.json copy /Y configs\catalog.example.json configs\catalog.json
 	@if exist configs\companies.example.json if not exist configs\companies.json copy /Y configs\companies.example.json configs\companies.json
 	@if exist configs\config.example.yaml if not exist configs\config.yaml copy /Y configs\config.example.yaml configs\config.yaml
+	@if exist configs\config.docker.example.yaml if not exist configs\config.docker.yaml copy /Y configs\config.docker.example.yaml configs\config.docker.yaml
 else
 	chmod +x .githooks/pre-commit .githooks/pre-push
 	@echo "  Git hooks configured: .githooks/"
@@ -161,7 +169,7 @@ else
 		elif [ ! -f "$$target" ]; then cp "$$f" "$$target" && echo "  Created: $$target"; \
 		else echo "  Skipped: $$target (already exists)"; fi; \
 	done
-	@for f in configs/notification.example.json configs/services.example.json configs/services.docker.example.json configs/payment_methods.example.json configs/catalog.example.json configs/companies.example.json configs/config.example.yaml; do \
+	@for f in configs/services.example.json configs/services.docker.example.json configs/payment_methods.example.json configs/catalog.example.json configs/companies.example.json configs/config.example.yaml configs/config.docker.example.yaml; do \
 		target=$$(echo $$f | sed 's/\.example\././'); \
 		if [ ! -f "$$f" ]; then echo "  Skipped: $$target ($$f not found)"; \
 		elif [ ! -f "$$target" ]; then cp "$$f" "$$target" && echo "  Created: $$target"; \
@@ -218,3 +226,38 @@ secrets: ## Run gitleaks secret scan on the repository
 
 .PHONY: check
 check: tidy fmt lint test ## Run all quality checks: tidy → fmt → lint → test
+
+# ---------------------------------------------------------------------------
+# Docs quality (mirrors .github/workflows/docs-ci.yml)
+# markdownlint runs through npx (Node.js); lychee and Vale run in Docker.
+# ---------------------------------------------------------------------------
+
+# The pre-commit hook pins the same markdownlint-cli2 version.
+MDLINT_VERSION := 0.23.2
+# markdownlint --fix cannot pad tables, so mdlint-fix runs Prettier for them.
+PRETTIER_VERSION := 3.9.9
+LYCHEE_IMAGE   := lycheeverse/lychee:0.24.2
+VALE_IMAGE     := jdkato/vale:v3.24.0
+# Lazy (=) so git runs only when a target that needs the file list is invoked.
+MD_FILES = $(shell git ls-files "*.md")
+
+.PHONY: mdlint
+mdlint: ## Lint Markdown files (rules: .markdownlint-cli2.jsonc)
+	npx --yes markdownlint-cli2@$(MDLINT_VERSION)
+
+.PHONY: mdlint-fix
+mdlint-fix: ## Apply markdownlint's automatic fixes and align tables with Prettier
+	npx --yes markdownlint-cli2@$(MDLINT_VERSION) --fix || true
+	npx --yes prettier@$(PRETTIER_VERSION) --prose-wrap preserve --embedded-language-formatting off --write $(MD_FILES)
+	npx --yes markdownlint-cli2@$(MDLINT_VERSION)
+
+.PHONY: linkcheck
+linkcheck: ## Check links and #anchors in Markdown files with lychee (needs Docker)
+	docker run --rm -e GITHUB_TOKEN -v "$(CURDIR):/input" -w /input $(LYCHEE_IMAGE) --no-progress $(MD_FILES)
+
+.PHONY: prose
+prose: ## Check Markdown spelling and term casing with Vale (needs Docker)
+	docker run --rm -v "$(CURDIR):/docs" -w /docs $(VALE_IMAGE) $(MD_FILES)
+
+.PHONY: docs-check
+docs-check: mdlint linkcheck prose ## Run all docs checks: mdlint → linkcheck → prose
